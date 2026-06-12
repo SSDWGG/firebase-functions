@@ -33,6 +33,7 @@ import { DecodedIdToken, getAuth } from "firebase-admin/auth";
 import { getApp } from "../app";
 import { isDebugFeatureEnabled } from "../debug";
 import { TaskContext } from "./tasks";
+import { Expression } from "../../params";
 
 const JWT_REGEX = /^[a-zA-Z0-9\-_=]+?\.[a-zA-Z0-9\-_=]+?\.([a-zA-Z0-9\-_=]+)?$/;
 
@@ -710,9 +711,43 @@ type v2CallableHandler<Req, Res, Stream> = (
   response?: CallableResponse<Stream>
 ) => Res;
 
+export type CorsOption =
+  | string
+  | Expression<string>
+  | Expression<string[]>
+  | boolean
+  | RegExp
+  | Array<string | RegExp>;
+
+export function resolveCorsOrigin(corsOption?: CorsOption): cors.CorsOptions["origin"] {
+  let origin = corsOption instanceof Expression ? corsOption.value() : corsOption;
+
+  if (isDebugFeatureEnabled("enableCors")) {
+    // Respect `cors: false` to turn off cors even if debug feature is enabled.
+    origin = origin === false ? false : true;
+  }
+
+  if (origin === undefined) {
+    origin = true;
+  }
+
+  // Arrays cause the access-control-allow-origin header to be dynamic based
+  // on the origin header of the request. If there is only one element in the
+  // array, this is unnecessary.
+  if (Array.isArray(origin) && origin.length === 1) {
+    origin = origin[0];
+  }
+
+  return origin;
+}
+
+export type CorsInfo = Omit<cors.CorsOptions, "origin"> & {
+  origin?: CorsOption;
+};
+
 /** @internal **/
 export interface CallableOptions<T = any> {
-  cors: cors.CorsOptions;
+  cors: CorsInfo;
   enforceAppCheck?: boolean;
   consumeAppCheckToken?: boolean;
   /* @deprecated */
@@ -736,7 +771,12 @@ export function onCallHandler<Req = any, Res = any, Stream = unknown>(
   return (req: Request, res: express.Response) => {
     return new Promise((resolve) => {
       res.on("finish", resolve);
-      cors(options.cors)(req, res, () => {
+      const origin = resolveCorsOrigin(options.cors.origin);
+      const corsOptions = {
+        ...options.cors,
+        origin,
+      };
+      cors(corsOptions as cors.CorsOptions)(req, res, () => {
         resolve(wrapped(req, res));
       });
     });
